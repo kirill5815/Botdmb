@@ -1,121 +1,25 @@
 #!/usr/bin/env python3
-import pytz, datetime as dt, asyncio
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, PicklePersistence, filters
-import os, time, threading, datetime as dt
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, PicklePersistence
+import os
+import random
+import datetime as dt
+import asyncio
+import pytz
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes, PicklePersistence, filters
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    PicklePersistence,
 )
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]          # Render подставит сам
-PORT        = int(os.environ.get("PORT", 10000))  # порт, который даст Render
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
 
-# --- фейковый HTTP-сервер, чтобы Render не гасил инстанс ---
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Шлёт всем пользователям, у кого задана дата, сколько дней осталось."""
-    bot_data = context.application.bot_data
-    for user_id, data in bot_data.items():
-        if "date" not in data:
-            continue
-        dembel_date = dt.date.fromisoformat(data["date"])
-        delta = (dembel_date - dt.date.today()).days
-        if delta < 0:                       # уже дембель
-            text = "🎉 Поздравляю, ты уже дембель!"
-        elif delta == 0:
-            text = "🎊 Сегодня день Х – ДЕМБЕЛЬ!"
-        else:
-            text = f"📆 До дембеля осталось {delta} дней,бусинка и мы будем вместе ❤"
-        try:
-            await context.bot.send_message(chat_id=user_id, text=text)
-        except Exception as e:
-            # пользователь мог заблокировать бота
-            print(f"skip {user_id}: {e}")
+MOSCOW = pytz.timezone("Europe/Moscow")
+PERSIST_FILE = "bot_data.pickle"
 
-def keep_alive():
-    with HTTPServer(("", PORT), Handler) as srv:
-        srv.serve_forever()
-
-threading.Thread(target=keep_alive, daemon=True).start()
-
-# --- логика бота ---
-persistence = PicklePersistence("bot_data.pickle")
-
-async def start(update: Update, _):
-    await update.message.reply_text(
-        "👋 Привет! Я считаю дни до дембеля.\n"
-        "Отправь дату в формате ДД.ММ.ГГГГ"
-    )
-
-async def dembel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    data = ctx.bot_data.get(user.id)
-    if not data or "date" not in data:
-        await update.message.reply_text("Сначала отправь дату дембеля!")
-        return
-    dembel_date = dt.date.fromisoformat(data["date"])
-    delta = (dembel_date - dt.date.today()).days
-    if delta < 0:
-        await update.message.reply_text("🎉 Ты уже дембель!")
-    elif delta == 0:
-        await update.message.reply_text("🎊 Сегодня дембель!")
-    else:
-        await update.message.reply_text(f"📆 До дембеля осталось: {delta} дней")
-
-
-async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    try:
-        dembel_date = dt.datetime.strptime(update.message.text, "%d.%m.%Y").date()
-    except ValueError:
-        await update.message.reply_text("❌ Формат: ДД.ММ.ГГГГ")
-        return
-    if dembel_date <= dt.date.today():
-        await update.message.reply_text("Дата должна быть в будущем.")
-        return
-    ctx.bot_data.setdefault(user.id, {})["date"] = dembel_date.isoformat()
-    await update.message.reply_text("✅ Сохранил!")
-def set_daily_job(job_queue: JobQueue):
-    # 09:00 каждый день; first=(ближайшее 09:00)
-    now = dt.datetime.utcnow()
-    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    if target < now:
-        target += dt.timedelta(days=1)
-    job_queue.run_repeating(daily_reminder, interval=dt.timedelta(days=1), first=target)
-def main():
-    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dembel", dembel))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-def set_daily_job(job_queue: JobQueue):
-    import pytz
-    msk = pytz.timezone("Europe/Moscow")
-    now = dt.datetime.now(msk)
-    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    if target <= now:
-        target += dt.timedelta(days=1)
-    utc_target = target.astimezone(pytz.utc)
-    job_queue.run_repeating(daily_reminder, interval=dt.timedelta(days=1), first=utc_target)
-
-    # ежедневное напоминание
-    set_daily_job(app.job_queue)
-
-    print("Bot + daily reminder started …")
-    app.run_polling(stop_signals=None)
-# 1. Импорты (добавь к уже существующим)
-import random
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
-
-# 2. Тексты-подарки для неё
 LOVE_LINES = [
     "Моя самая стойкая девчонка, ты — мой пост №1, который я несу в сердце каждый день.",
     "Сколько бы ни было нарядов, самая красивая форма — это твоя улыбка на фото.",
@@ -126,40 +30,114 @@ LOVE_LINES = [
     "Твои «спокойной ночи» греют лучше любого костра в поле.",
     "Дома уже пахнет твоим шампунем — я помню и мечтаю вдохнуть этот запах вживую.",
     "Ты — мой личный приказ №1: «Вернуться и сделать её самой счастливой».",
-    "Пока служу, храню каждое твоё фото в груди, как бронежилет для души."
+    "Пока служу, храню каждое твоё фото в груди, как бронежилет для души.",
 ]
 
-# 3. Клавиатура с одной кнопкой
-def girl_menu_mini() -> InlineKeyboardMarkup:
+# ---------- клавиатура ----------
+def main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💌 Трогательное письмо", callback_data="love")]
     ])
 
-# 4. Обработчик нажатия кнопки
-async def send_love(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+# ---------- обратный отсчёт ----------
+def format_countdown(target_date: dt.date) -> str:
+    """Возвращает строку дн. чч:мм:сс до целевой даты по МСК."""
+    now = dt.datetime.now(MOSCOW)
+    target_dt = MOSCOW.localize(dt.datetime.combine(target_date, dt.time(0, 0)))
+    delta = target_dt - now
+    if delta.total_seconds() <= 0:
+        return "🎉 Дембель настал!"
+    days = delta.days
+    hours, rem = divmod(delta.seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    return f"До встречи: {days} дн. {hours:02d}:{mins:02d}:{secs:02d}"
+
+# ---------- команды ----------
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    data = ctx.bot_data.setdefault(user.id, {})
+    if "date" not in data:
+        # просим дату, если ещё не задана
+        await update.message.reply_text("Введи дату дембеля в формате ДД.ММ.ГГГГ")
+        data["expect_date"] = True
+        return
+
+    # сразу показываем счётчик
+    msg = await update.message.reply_text(
+        format_countdown(dt.date.fromisoformat(data["date"])),
+        reply_markup=main_kb()
+    )
+    # запускаем ежесекундное обновление
+    ctx.job_queue.run_repeating(
+        update_countdown,
+        interval=1,
+        first=0,
+        data={"chat_id": msg.chat_id, "message_id": msg.message_id},
+        name=f"countdown_{user.id}"
+    )
+
+async def update_countdown(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job_data = context.job.data
+    user_id = context.job.name.split("_")[1]
+    user_data = context.application.bot_data.get(int(user_id), {})
+    if "date" not in user_data:
+        context.job.schedule_removal()
+        return
+    try:
+        await context.bot.edit_message_text(
+            chat_id=job_data["chat_id"],
+            message_id=job_data["message_id"],
+            text=format_countdown(dt.date.fromisoformat(user_data["date"])),
+            reply_markup=main_kb()
+        )
+    except Exception as e:
+        # сообщение могли удалить
+        context.job.schedule_removal()
+
+async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    data = ctx.bot_data.setdefault(user.id, {})
+    if data.get("expect_date"):
+        try:
+            target = dt.datetime.strptime(update.message.text, "%d.%m.%Y").date()
+        except ValueError:
+            await update.message.reply_text("❌ Формат: ДД.ММ.ГГГГ")
+            return
+        if target <= dt.date.today():
+            await update.message.reply_text("Дата должна быть в будущем.")
+            return
+        data["date"] = target.isoformat()
+        data.pop("expect_date", None)
+        # показываем счётчик
+        msg = await update.message.reply_text(
+            format_countdown(target),
+            reply_markup=main_kb()
+        )
+        ctx.job_queue.run_repeating(
+            update_countdown,
+            interval=1,
+            first=0,
+            data={"chat_id": msg.chat_id, "message_id": msg.message_id},
+            name=f"countdown_{user.id}"
+        )
+
+async def send_love(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await ctx.bot.send_message(
         update.effective_chat.id,
         text=random.choice(LOVE_LINES)
     )
 
-# 5. Где показать кнопку (пример в /start)
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Нажми кнопку ниже:",
-        reply_markup=girl_menu_mini()
-    )
-
-# 6. Регистрация хендлеров (добавь в main())
-app.add_handler(CommandHandler("start", cmd_start))
-app.add_handler(CallbackQueryHandler(send_love, pattern="^love$"))
-
-def main():
+# ---------- запуск ----------
+def main() -> None:
+    persistence = PicklePersistence(filepath=PERSIST_FILE)
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dembel", dembel))
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CallbackQueryHandler(send_love, pattern="^love$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    print("Bot started on Render …")
-    app.run_polling(stop_signals=None)   # Render не любит SIGINT
+
+    print("Bot (MSK + live countdown) started …")
+    app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
     main()
