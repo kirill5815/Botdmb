@@ -31,7 +31,7 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE):
         elif delta == 0:
             text = "🎊 Сегодня день Х – ДЕМБЕЛЬ!"
         else:
-            text = f"📆 До дембеля осталось {delta} дней"
+            text = f"📆 До дембеля осталось {delta} дней,бусинка и мы будем вместе ❤"
         try:
             await context.bot.send_message(chat_id=user_id, text=text)
         except Exception as e:
