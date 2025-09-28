@@ -3,6 +3,9 @@ import os, time, threading, datetime as dt
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, PicklePersistence
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, ContextTypes, PicklePersistence, filters
+)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]          # Render подставит сам
 PORT        = int(os.environ.get("PORT", 10000))  # порт, который даст Render
