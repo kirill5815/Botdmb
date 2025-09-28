@@ -95,6 +95,15 @@ def main():
     app.add_handler(CommandHandler("dembel", dembel))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+def set_daily_job(job_queue: JobQueue):
+    import pytz
+    msk = pytz.timezone("Europe/Moscow")
+    now = dt.datetime.now(msk)
+    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += dt.timedelta(days=1)
+    utc_target = target.astimezone(pytz.utc)
+    job_queue.run_repeating(daily_reminder, interval=dt.timedelta(days=1), first=utc_target)
 
     # ежедневное напоминание
     set_daily_job(app.job_queue)
