@@ -9,12 +9,15 @@ import random
 import datetime as dt
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,   # ← добавь
     ContextTypes,
     PicklePersistence,
+    filters,          # ← добавь
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
