@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Telegram-бот «Дембель» (полный, без JobQueue)
-- Background Worker на Render
-- Self-ping через Deploy Hook (24/7 без сторонников)
-- Live-счётчик до дембеля (МСК)
+Telegram-бот «Дембель» (Web Service версия)
+- Работает на Render 24/7 (self-ping через Deploy Hook)
+- Живой счётчик до дембеля (МСК)
 - Утро 06:00, вечер 21:00 (ручной цикл)
 - Кнопки: 📆 Сколько до дембеля | 💌 Трогательное письмо
+- Открыт порт 10000 (заглушка) – Web Service не таймаутит
 """
 import os
 import random
@@ -23,15 +23,18 @@ from telegram.ext import (
     PicklePersistence,
     filters,
 )
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 BOT_TOKEN   = os.getenv("BOT_TOKEN")
-HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK", "")  # может быть пусто локально
+HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK", "")   # может быть пусто локально
 if not BOT_TOKEN:
     raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
 
 MOSCOW      = pytz.timezone("Europe/Moscow")
 PERSIST_FILE= "bot_data.pickle"
 
+# ---------- текста для девушки ----------
 LOVE_LINES = [
     "Моя самая стойкая девчонка, ты — мой пост №1, который я несу в сердце каждый день.",
     "Сколько бы ни было нарядов, самая красивая форма — это твоя улыбка на фото.",
@@ -178,6 +181,19 @@ async def self_ping():
             except Exception as e:
                 print(f"[ping] error {e}")
 
+# ---------- заглушка-порт (обязательно для Web Service) ----------
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def keep_alive():
+    with HTTPServer(("", int(os.getenv("PORT", 10000))), Handler) as srv:
+        srv.serve_forever()
+
+threading.Thread(target=keep_alive, daemon=True).start()
+
 # ---------- запуск ----------
 async def post_init(app: Application) -> None:
     """Запускаем фоновые корутины после старта polling."""
@@ -199,7 +215,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(send_love, pattern="^love$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    print("Bot (MSK + live countdown + 06:00/21:00 + self-ping, NO JobQueue) started …")
+    print("Bot (Web Service + live countdown + 06:00/21:00 + self-ping) started")
     app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
