@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
+"""
+Telegram-бот «Дембель» (лаконичная версия, МСК, секундный счётчик)
+Команды: /start
+Кнопки: 📆 Сколько до дембеля | 💌 Трогательное письмо
+"""
 import os
 import random
 import datetime as dt
-import asyncio
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
     PicklePersistence,
-    MessageHandler,
-    filters,
 )
-
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -39,12 +40,14 @@ LOVE_LINES = [
 # ---------- клавиатура ----------
 def main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💌 Трогательное письмо", callback_data="love")]
+        [
+            InlineKeyboardButton("📆 Сколько до дембеля", callback_data="now"),
+            InlineKeyboardButton("💌 Трогательное письмо", callback_data="love"),
+        ]
     ])
 
 # ---------- обратный отсчёт ----------
 def format_countdown(target_date: dt.date) -> str:
-    """Возвращает строку дн. чч:мм:сс до целевой даты по МСК."""
     now = dt.datetime.now(MOSCOW)
     target_dt = MOSCOW.localize(dt.datetime.combine(target_date, dt.time(0, 0)))
     delta = target_dt - now
@@ -60,17 +63,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     data = ctx.bot_data.setdefault(user.id, {})
     if "date" not in data:
-        # просим дату, если ещё не задана
         await update.message.reply_text("Введи дату дембеля в формате ДД.ММ.ГГГГ")
         data["expect_date"] = True
         return
-
-    # сразу показываем счётчик
+    # показываем счётчик
     msg = await update.message.reply_text(
         format_countdown(dt.date.fromisoformat(data["date"])),
         reply_markup=main_kb()
     )
-    # запускаем ежесекундное обновление
+    # ежесекундное обновление
     ctx.job_queue.run_repeating(
         update_countdown,
         interval=1,
@@ -78,24 +79,6 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         data={"chat_id": msg.chat_id, "message_id": msg.message_id},
         name=f"countdown_{user.id}"
     )
-
-async def update_countdown(context: ContextTypes.DEFAULT_TYPE) -> None:
-    job_data = context.job.data
-    user_id = context.job.name.split("_")[1]
-    user_data = context.application.bot_data.get(int(user_id), {})
-    if "date" not in user_data:
-        context.job.schedule_removal()
-        return
-    try:
-        await context.bot.edit_message_text(
-            chat_id=job_data["chat_id"],
-            message_id=job_data["message_id"],
-            text=format_countdown(dt.date.fromisoformat(user_data["date"])),
-            reply_markup=main_kb()
-        )
-    except Exception as e:
-        # сообщение могли удалить
-        context.job.schedule_removal()
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -111,7 +94,6 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
         data["date"] = target.isoformat()
         data.pop("expect_date", None)
-        # показываем счётчик
         msg = await update.message.reply_text(
             format_countdown(target),
             reply_markup=main_kb()
@@ -123,6 +105,34 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             data={"chat_id": msg.chat_id, "message_id": msg.message_id},
             name=f"countdown_{user.id}"
         )
+
+async def update_countdown(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job_data = context.job.data
+    user_id = int(context.job.name.split("_")[1])
+    user_data = context.application.bot_data.get(user_id, {})
+    if "date" not in user_data:
+        context.job.schedule_removal()
+        return
+    try:
+        await context.bot.edit_message_text(
+            chat_id=job_data["chat_id"],
+            message_id=job_data["message_id"],
+            text=format_countdown(dt.date.fromisoformat(user_data["date"])),
+            reply_markup=main_kb()
+        )
+    except Exception:
+        context.job.schedule_removal()
+
+async def btn_now(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    data = ctx.bot_data.get(user.id, {})
+    if "date" not in data:
+        await ctx.bot.send_message(user.id, "Сначала укажи дату дембеля.")
+        return
+    await ctx.bot.send_message(
+        user.id,
+        format_countdown(dt.date.fromisoformat(data["date"]))
+    )
 
 async def send_love(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await ctx.bot.send_message(
@@ -136,6 +146,7 @@ def main() -> None:
     app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CallbackQueryHandler(btn_now, pattern="^now$"))
     app.add_handler(CallbackQueryHandler(send_love, pattern="^love$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
