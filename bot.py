@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Telegram-бот «Дембель» (без JobQueue)
-- счётчик обновляется вручную каждую секунду
-- напоминания 06:00/21:00 по МСК (проверка каждую минуту)
-- self-ping через Deploy Hook → не засыпает
+Telegram-бот «Дембель» (полный, без JobQueue)
+- Background Worker на Render
+- Self-ping через Deploy Hook (24/7 без сторонников)
+- Live-счётчик до дембеля (МСК)
+- Утро 06:00, вечер 21:00 (ручной цикл)
+- Кнопки: 📆 Сколько до дембеля | 💌 Трогательное письмо
 """
 import os
 import random
@@ -23,7 +25,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN   = os.getenv("BOT_TOKEN")
-HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK")
+HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK", "")  # может быть пусто локально
 if not BOT_TOKEN:
     raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
 
@@ -65,8 +67,8 @@ def format_countdown(target_date: dt.date) -> str:
     return f"До встречи: {days} дн. {hours:02d}:{mins:02d}:{secs:02d}"
 
 # ---------- ручные напоминания 06:00 / 21:00 ----------
-async def reminder_loop(bot: Bot):
-    """Проверяет каждую минуту: если 06:00 или 21:00 по МСК → шлёт напоминание."""
+async def reminder_loop(bot):
+    """Каждую минуту проверяет время и шлёт напоминания."""
     while True:
         await asyncio.sleep(60)
         now = dt.datetime.now(MOSCOW)
@@ -75,7 +77,7 @@ async def reminder_loop(bot: Bot):
         elif now.hour == 21 and now.minute == 0:
             await send_daily(bot, prefix="🌙 Спокойной ночи! ")
 
-async def send_daily(bot: Bot, prefix: str = ""):
+async def send_daily(bot, prefix=""):
     bot_data = bot.application.bot_data
     for user_id, data in bot_data.items():
         if "date" not in data:
@@ -94,7 +96,7 @@ async def send_daily(bot: Bot, prefix: str = ""):
             print(f"skip {user_id}: {e}")
 
 # ---------- ручной счётчик (обновление каждую секунду) ----------
-async def countdown_loop(bot: Bot, chat_id: int, message_id: int, user_id: int):
+async def countdown_loop(bot, chat_id, message_id, user_id):
     """Каждую секунду редактирует сообщение с таймером."""
     while True:
         await asyncio.sleep(1)
@@ -119,12 +121,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Введи дату дембеля в формате ДД.ММ.ГГГГ")
         data["expect_date"] = True
         return
-    # показываем счётчик
     msg = await update.message.reply_text(
         format_countdown(dt.date.fromisoformat(data["date"])),
         reply_markup=main_kb()
     )
-    # запускаем ручной цикл обновления
     asyncio.create_task(countdown_loop(ctx.bot, msg.chat_id, msg.message_id, user.id))
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -166,10 +166,10 @@ async def send_love(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------- self-ping (внутри event-loop) ----------
 async def self_ping():
-    """Раз в 7 мин дергает Deploy Hook → Render не засыпает."""
-    await asyncio.sleep(5)  # старт через 5 сек
+    """Раз в 7 мин POST-запрос на Deploy Hook → Render не засыпает."""
+    await asyncio.sleep(5)          # старт через 5 сек
     while True:
-        await asyncio.sleep(7 * 60)
+        await asyncio.sleep(7 * 60) # 7 минут
         if HOOK_URL:
             try:
                 async with aiohttp.ClientSession() as s:
@@ -181,7 +181,7 @@ async def self_ping():
 # ---------- запуск ----------
 async def post_init(app: Application) -> None:
     """Запускаем фоновые корутины после старта polling."""
-    asyncio.create_task(self_ping())          # anti-sleep
+    asyncio.create_task(self_ping())      # anti-sleep
     asyncio.create_task(reminder_loop(app.bot))  # 06:00 / 21:00
 
 def main() -> None:
@@ -190,7 +190,7 @@ def main() -> None:
         Application.builder()
         .token(BOT_TOKEN)
         .persistence(persistence)
-        .post_init(post_init)
+        .post_init(post_init)   # ← запускаем пинг внутри loop
         .build()
     )
 
