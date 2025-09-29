@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Telegram-бот «Дембель» (бесплатный 24/7)
-- Background Worker на Render
-- Сам себя будит раз в 7 мин через Deploy Hook
-- Секундный счётчик до дембеля (МСК)
-- Утро 06:00, вечер 21:00 – напоминания
+Telegram-бот «Дембель» (без JobQueue)
+- счётчик обновляется вручную каждую секунду
+- напоминания 06:00/21:00 по МСК (проверка каждую минуту)
+- self-ping через Deploy Hook → не засыпает
 """
 import os
 import random
@@ -21,18 +20,16 @@ from telegram.ext import (
     ContextTypes,
     PicklePersistence,
     filters,
-    JobQueue,
 )
 
 BOT_TOKEN   = os.getenv("BOT_TOKEN")
-HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK")   # Deploy Hook Render
+HOOK_URL    = os.getenv("RENDER_DEPLOY_HOOK")
 if not BOT_TOKEN:
     raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
 
 MOSCOW      = pytz.timezone("Europe/Moscow")
 PERSIST_FILE= "bot_data.pickle"
 
-# ---------- тексты ----------
 LOVE_LINES = [
     "Моя самая стойкая девчонка, ты — мой пост №1, который я несу в сердце каждый день.",
     "Сколько бы ни было нарядов, самая красивая форма — это твоя улыбка на фото.",
@@ -67,15 +64,19 @@ def format_countdown(target_date: dt.date) -> str:
     mins, secs = divmod(rem, 60)
     return f"До встречи: {days} дн. {hours:02d}:{mins:02d}:{secs:02d}"
 
-# ---------- ежедневные напоминания ----------
-async def send_morning(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await daily_reminder(context, prefix="☀️ Доброе утро! ")
+# ---------- ручные напоминания 06:00 / 21:00 ----------
+async def reminder_loop(bot: Bot):
+    """Проверяет каждую минуту: если 06:00 или 21:00 по МСК → шлёт напоминание."""
+    while True:
+        await asyncio.sleep(60)
+        now = dt.datetime.now(MOSCOW)
+        if now.hour == 6 and now.minute == 0:
+            await send_daily(bot, prefix="☀️ Доброе утро! ")
+        elif now.hour == 21 and now.minute == 0:
+            await send_daily(bot, prefix="🌙 Спокойной ночи! ")
 
-async def send_evening(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await daily_reminder(context, prefix="🌙 Спокойной ночи! ")
-
-async def daily_reminder(context: ContextTypes.DEFAULT_TYPE, prefix: str = "") -> None:
-    bot_data = context.application.bot_data
+async def send_daily(bot: Bot, prefix: str = ""):
+    bot_data = bot.application.bot_data
     for user_id, data in bot_data.items():
         if "date" not in data:
             continue
@@ -88,9 +89,27 @@ async def daily_reminder(context: ContextTypes.DEFAULT_TYPE, prefix: str = "") -
         else:
             text = prefix + f"До встречи осталось: {days_left} дней."
         try:
-            await context.bot.send_message(chat_id=user_id, text=text)
+            await bot.send_message(chat_id=user_id, text=text)
         except Exception as e:
             print(f"skip {user_id}: {e}")
+
+# ---------- ручной счётчик (обновление каждую секунду) ----------
+async def countdown_loop(bot: Bot, chat_id: int, message_id: int, user_id: int):
+    """Каждую секунду редактирует сообщение с таймером."""
+    while True:
+        await asyncio.sleep(1)
+        data = bot.application.bot_data.get(user_id, {})
+        if "date" not in data:
+            break
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=format_countdown(dt.date.fromisoformat(data["date"])),
+                reply_markup=main_kb()
+            )
+        except Exception:
+            break
 
 # ---------- команды и кнопки ----------
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,17 +119,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Введи дату дембеля в формате ДД.ММ.ГГГГ")
         data["expect_date"] = True
         return
+    # показываем счётчик
     msg = await update.message.reply_text(
         format_countdown(dt.date.fromisoformat(data["date"])),
         reply_markup=main_kb()
     )
-    ctx.job_queue.run_repeating(
-        update_countdown,
-        interval=1,
-        first=0,
-        data={"chat_id": msg.chat_id, "message_id": msg.message_id},
-        name=f"countdown_{user.id}"
-    )
+    # запускаем ручной цикл обновления
+    asyncio.create_task(countdown_loop(ctx.bot, msg.chat_id, msg.message_id, user.id))
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -130,30 +145,7 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             format_countdown(target),
             reply_markup=main_kb()
         )
-        ctx.job_queue.run_repeating(
-            update_countdown,
-            interval=1,
-            first=0,
-            data={"chat_id": msg.chat_id, "message_id": msg.message_id},
-            name=f"countdown_{user.id}"
-        )
-
-async def update_countdown(context: ContextTypes.DEFAULT_TYPE) -> None:
-    job_data = context.job.data
-    user_id = int(context.job.name.split("_")[1])
-    user_data = context.application.bot_data.get(user_id, {})
-    if "date" not in user_data:
-        context.job.schedule_removal()
-        return
-    try:
-        await context.bot.edit_message_text(
-            chat_id=job_data["chat_id"],
-            message_id=job_data["message_id"],
-            text=format_countdown(dt.date.fromisoformat(user_data["date"])),
-            reply_markup=main_kb()
-        )
-    except Exception:
-        context.job.schedule_removal()
+        asyncio.create_task(countdown_loop(ctx.bot, msg.chat_id, msg.message_id, user.id))
 
 async def btn_now(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -172,9 +164,10 @@ async def send_love(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         text=random.choice(LOVE_LINES)
     )
 
-# ---------- self-ping (анти-сон) ----------
+# ---------- self-ping (внутри event-loop) ----------
 async def self_ping():
-    """Раз в 7 мин дергаем Deploy Hook → Render не засыпает."""
+    """Раз в 7 мин дергает Deploy Hook → Render не засыпает."""
+    await asyncio.sleep(5)  # старт через 5 сек
     while True:
         await asyncio.sleep(7 * 60)
         if HOOK_URL:
@@ -186,31 +179,27 @@ async def self_ping():
                 print(f"[ping] error {e}")
 
 # ---------- запуск ----------
+async def post_init(app: Application) -> None:
+    """Запускаем фоновые корутины после старта polling."""
+    asyncio.create_task(self_ping())          # anti-sleep
+    asyncio.create_task(reminder_loop(app.bot))  # 06:00 / 21:00
+
 def main() -> None:
     persistence = PicklePersistence(filepath=PERSIST_FILE)
-    app = Application.builder().token(BOT_TOKEN).persistence(persistence).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .persistence(persistence)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(btn_now, pattern="^now$"))
     app.add_handler(CallbackQueryHandler(send_love, pattern="^love$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # ежедневные напоминания 06:00 и 21:00 по МСК
-    app.job_queue.run_daily(
-        send_morning,
-        time=dt.time(6, 0, tzinfo=MOSCOW),
-        name="morning"
-    )
-    app.job_queue.run_daily(
-        send_evening,
-        time=dt.time(21, 0, tzinfo=MOSCOW),
-        name="evening"
-    )
-
-    # фоновый пинг Render
-    asyncio.create_task(self_ping())
-
-    print("Bot (MSK + live countdown + 06:00/21:00 + self-ping) started …")
+    print("Bot (MSK + live countdown + 06:00/21:00 + self-ping, NO JobQueue) started …")
     app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
